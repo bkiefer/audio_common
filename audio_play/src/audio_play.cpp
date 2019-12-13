@@ -17,11 +17,13 @@ namespace audio_transport
         std::string dst_type;
         std::string device;
         bool do_timestamp;
+        std::string format;
 
         // The destination of the audio
         ros::param::param<std::string>("~dst", dst_type, "alsasink");
         ros::param::param<std::string>("~device", device, std::string());
         ros::param::param<bool>("~do_timestamp", do_timestamp, true);
+        ros::param::param<std::string>("~format", format, "mp3");
 
         _sub = _nh.subscribe("audio", 10, &RosGstPlay::onAudio, this);
 
@@ -34,53 +36,99 @@ namespace audio_transport
 
         //_playbin = gst_element_factory_make("playbin2", "uri_play");
         //g_object_set( G_OBJECT(_playbin), "uri", "file:///home/test/test.mp3", NULL);
+
+        gboolean link_ok;
+
         if (dst_type == "alsasink")
         {
-          _decoder = gst_element_factory_make("decodebin", "decoder");
-          g_signal_connect(_decoder, "pad-added", G_CALLBACK(cb_newpad),this);
-          gst_bin_add( GST_BIN(_pipeline), _decoder);
-          gst_element_link(_source, _decoder);
+          if (format == "mp3")
+          {
+            _decoder = gst_element_factory_make("decodebin", "decoder");
+            g_signal_connect(_decoder, "pad-added", G_CALLBACK(cb_newpad),this);
+            gst_bin_add( GST_BIN(_pipeline), _decoder);
+            gst_element_link(_source, _decoder);
 
-          _audio = gst_bin_new("audiobin");
-          _convert = gst_element_factory_make("audioconvert", "convert");
-          audiopad = gst_element_get_static_pad(_convert, "sink");
-          _sink = gst_element_factory_make("autoaudiosink", "sink");
-          if (!device.empty()) {
-            g_object_set(G_OBJECT(_sink), "device", device.c_str(), NULL);
+            _audio = gst_bin_new("audiobin");
+            _convert = gst_element_factory_make("audioconvert", "convert");
+            audiopad = gst_element_get_static_pad(_convert, "sink");
+            _sink = gst_element_factory_make("autoaudiosink", "sink");
+            if (!device.empty()) {
+              g_object_set(G_OBJECT(_sink), "device", device.c_str(), NULL);
+            }
+            gst_bin_add_many( GST_BIN(_audio), _convert, _sink, NULL);
+            gst_element_link(_convert, _sink);
+            gst_element_add_pad(_audio, gst_ghost_pad_new("sink", audiopad));
+            gst_object_unref(audiopad);
+
+            gst_bin_add(GST_BIN(_pipeline), _audio);
           }
-          gst_bin_add_many( GST_BIN(_audio), _convert, _sink, NULL);
-          gst_element_link(_convert, _sink);
-          gst_element_add_pad(_audio, gst_ghost_pad_new("sink", audiopad));
-          gst_object_unref(audiopad);
+          else
+          {
+            // format must contain a valid format specification for gstreamer,
+            // such as
+            // audio/x-raw,format=S16LE,rate=16000,channels=1,layout=interleaved
 
-          gst_bin_add(GST_BIN(_pipeline), _audio);
+            _decoder = gst_element_factory_make("capsfilter", "filter");
+            GstCaps *caps;
+	    caps = gst_caps_from_string(format.c_str());
+            g_object_set( G_OBJECT(_decoder), "caps", caps, NULL);
+	    gst_caps_unref(caps);
+
+            _convert = gst_element_factory_make("audioconvert", "convert");
+            _sink = gst_element_factory_make("autoaudiosink", "sink");
+            if (!device.empty()) {
+              g_object_set(G_OBJECT(_sink), "device", device.c_str(), NULL);
+            }
+            gst_bin_add_many( GST_BIN(_pipeline), _decoder,
+                              _convert, _sink, NULL);
+
+            link_ok = gst_element_link_many( _source, _decoder,
+                                             _convert, _sink, NULL );
+            if (! link_ok) {
+              ROS_ERROR("Link for %s could not be established!",
+                               format.c_str());
+              exitOnMainThread(1);
+            }
+          }
         }
         else
         {
           _sink = gst_element_factory_make("filesink", "sink");
           g_object_set( G_OBJECT(_sink), "location", dst_type.c_str(), NULL);
           gst_bin_add(GST_BIN(_pipeline), _sink);
-          gst_element_link(_source, _sink);
+          link_ok = gst_element_link(_source, _sink);
         }
 
-        gst_element_set_state(GST_ELEMENT(_pipeline), GST_STATE_PLAYING);
+        if (link_ok) {
+          ROS_INFO("Link OK");
+          gst_element_set_state(GST_ELEMENT(_pipeline), GST_STATE_PLAYING);
+        } else {
+          ROS_ERROR("Link not OK, exiting");
+          exit(1);
+        }
         //gst_element_set_state(GST_ELEMENT(_playbin), GST_STATE_PLAYING);
 
         _gst_thread = boost::thread( boost::bind(g_main_loop_run, _loop) );
       }
 
     private:
+      void exitOnMainThread(int code)
+      {
+        exit(code);
+      }
 
       void onAudio(const audio_common_msgs::AudioDataConstPtr &msg)
       {
+        ROS_INFO("Enter onAudio with %ld msg size", msg->data.size());
         GstBuffer *buffer = gst_buffer_new_and_alloc(msg->data.size());
         gst_buffer_fill(buffer, 0, &msg->data[0], msg->data.size());
         GstFlowReturn ret;
 
         g_signal_emit_by_name(_source, "push-buffer", buffer, &ret);
+        ROS_INFO("Flow return: %d", ret);
       }
 
-     static void cb_newpad (GstElement *decodebin, GstPad *pad, 
+     static void cb_newpad (GstElement *decodebin, GstPad *pad,
                              gpointer data)
       {
         RosGstPlay *client = reinterpret_cast<RosGstPlay*>(data);
@@ -91,7 +139,7 @@ namespace audio_transport
 
         /* only link once */
         audiopad = gst_element_get_static_pad (client->_audio, "sink");
-        if (GST_PAD_IS_LINKED (audiopad)) 
+        if (GST_PAD_IS_LINKED (audiopad))
         {
           g_object_unref (audiopad);
           return;
@@ -131,6 +179,8 @@ int main (int argc, char **argv)
   gst_init(&argc, &argv);
 
   audio_transport::RosGstPlay client;
+
+  ROS_INFO("Start spinning");
 
   ros::spin();
 }
