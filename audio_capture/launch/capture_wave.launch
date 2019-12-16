@@ -1,13 +1,23 @@
 <launch>
-  <arg name="device" default="" />
+  <!-- arecord -l will show available input devices, use the car number as
+      the first number and the subdevice number as the second in a string
+      like hw:1,0 -->
+  <arg name="device" default=""/>
+  <arg name="channels" default="1"/>
+  <arg name="sample_rate" default="16000"/>
+  <arg name="format" default="wave"/>
+  <arg name="depth" default="16"/>
+  <arg name="ns" default="audio"/>
 
-  <!-- publish audio data as wav format -->
-  <node name="audio_capture" pkg="audio_capture" type="audio_capture" output="screen">
-    <param name="device" value="" />
-    <param name="format" value="wave" />
-    <param name="channels" value="1" />
-    <param name="depth" value="16" />
-    <param name="sample_rate" value="16000" />
-    <param name="device" value="$(arg device)" />
-  </node>
+  <group ns="$(arg ns)">
+    <!-- publish audio data in raw format -->
+    <node name="audio_capture" pkg="audio_capture" type="audio_capture" output="screen">
+      <param name="depth" value="$(arg depth)"/>
+      <param name="device" value="$(arg device)"/>
+      <param name="channels" value="$(arg channels)"/>
+      <param name="sample_rate" value="$(arg sample_rate)"/>
+      <param name="format" value="$(arg format)"/>
+    </node>
+  </group>
+
 </launch>
