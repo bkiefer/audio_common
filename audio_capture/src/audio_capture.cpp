@@ -164,7 +164,6 @@ namespace audio_transport
 
       void publish( const audio_common_msgs::AudioData &msg )
       {
-        ROS_INFO("Publishing %ld bytes", msg.data.size());
         _pub.publish(msg);
       }
 

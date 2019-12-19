@@ -37,7 +37,7 @@ namespace audio_transport
         //_playbin = gst_element_factory_make("playbin2", "uri_play");
         //g_object_set( G_OBJECT(_playbin), "uri", "file:///home/test/test.mp3", NULL);
 
-        gboolean link_ok;
+        gboolean link_ok = true;
 
         if (dst_type == "alsasink")
         {
@@ -68,27 +68,23 @@ namespace audio_transport
             // such as
             // audio/x-raw,format=S16LE,rate=16000,channels=1,layout=interleaved
 
-            _decoder = gst_element_factory_make("capsfilter", "filter");
+            // this avoids the following error:
+            // gst_segment_to_running_time: assertion 'segment->format == format' failed
+            // but i don't know why exactly
+            g_object_set(G_OBJECT(_source), "format", GST_FORMAT_TIME, NULL);
             GstCaps *caps;
-	    caps = gst_caps_from_string(format.c_str());
-            g_object_set( G_OBJECT(_decoder), "caps", caps, NULL);
-	    gst_caps_unref(caps);
+            caps = gst_caps_from_string(format.c_str());
+            g_object_set( G_OBJECT(_source), "caps", caps, NULL);
+            gst_caps_unref(caps);
 
             _convert = gst_element_factory_make("audioconvert", "convert");
             _sink = gst_element_factory_make("autoaudiosink", "sink");
             if (!device.empty()) {
               g_object_set(G_OBJECT(_sink), "device", device.c_str(), NULL);
             }
-            gst_bin_add_many( GST_BIN(_pipeline), _decoder,
-                              _convert, _sink, NULL);
+            gst_bin_add_many( GST_BIN(_pipeline), _convert, _sink, NULL);
 
-            link_ok = gst_element_link_many( _source, _decoder,
-                                             _convert, _sink, NULL );
-            if (! link_ok) {
-              ROS_ERROR("Link for %s could not be established!",
-                               format.c_str());
-              exitOnMainThread(1);
-            }
+            link_ok = gst_element_link_many( _source, _convert, _sink, NULL );
           }
         }
         else
@@ -100,7 +96,6 @@ namespace audio_transport
         }
 
         if (link_ok) {
-          ROS_INFO("Link OK");
           gst_element_set_state(GST_ELEMENT(_pipeline), GST_STATE_PLAYING);
         } else {
           ROS_ERROR("Link not OK, exiting");
@@ -119,13 +114,11 @@ namespace audio_transport
 
       void onAudio(const audio_common_msgs::AudioDataConstPtr &msg)
       {
-        ROS_INFO("Enter onAudio with %ld msg size", msg->data.size());
         GstBuffer *buffer = gst_buffer_new_and_alloc(msg->data.size());
         gst_buffer_fill(buffer, 0, &msg->data[0], msg->data.size());
         GstFlowReturn ret;
 
         g_signal_emit_by_name(_source, "push-buffer", buffer, &ret);
-        ROS_INFO("Flow return: %d", ret);
       }
 
      static void cb_newpad (GstElement *decodebin, GstPad *pad,
